@@ -1,0 +1,10 @@
+aiogram
+apscheduler
+requests
+python-docx
+openpyxl
+PySocks
+aiohttp-socks
+tzdata
+Flask
+gunicorn
