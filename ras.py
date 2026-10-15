@@ -1,5 +1,4 @@
 import json
-import asyncio
 import io
 import calendar
 import logging
@@ -10,7 +9,7 @@ from urllib.parse import urlencode
 
 import requests
 from docx import Document
-from aiogram import Bot, Dispatcher, F, BaseMiddleware
+from aiogram import Bot, Dispatcher, BaseMiddleware
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton,
@@ -20,7 +19,8 @@ from aiogram.types import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ================= НАСТРОЙКИ =================
-TELEGRAM_TOKEN = "8299017583:AAE2QEwHva2OLUpL_h_39oE0R7jEKyEeNLE"
+import os
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 
 OWNER_USERNAME = "pampampa1"
 INITIAL_ADMINS = ["ginytimary"]
@@ -34,7 +34,6 @@ CANCELLED_FILE = Path("cancelled.json")
 MUTE_FILE = Path("mute.json")
 SETTINGS_FILE = Path("settings.json")
 OWNER_FILE = Path("owner.json")
-LOG_FILE = Path("bot.log")
 
 DEFAULT_SETTINGS = {
     "ref_monday": "2026-10-12",
@@ -62,10 +61,7 @@ START_TIME = time.time()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
+    handlers=[logging.StreamHandler()],
 )
 log = logging.getLogger("bot")
 
@@ -906,46 +902,6 @@ async def cmd_ping(message: Message):
     )
 
 
-@dp.message(Command("logs"))
-async def cmd_logs(message: Message):
-    if not is_owner(message):
-        return
-    parts = message.text.split()
-    n = 30
-    if len(parts) >= 2:
-        try:
-            n = int(parts[1])
-        except ValueError:
-            pass
-    if not LOG_FILE.exists():
-        await message.answer("Лог пуст.")
-        return
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-    tail = "".join(lines[-n:]) or "(пусто)"
-    if len(tail) > 3500:
-        tail = tail[-3500:]
-    await message.answer(f"📄 Последние {n} строк лога:\n\n{tail}")
-
-
-@dp.message(Command("errors"))
-async def cmd_errors(message: Message):
-    if not is_owner(message):
-        return
-    if not LOG_FILE.exists():
-        await message.answer("Лог пуст.")
-        return
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        errs = [l for l in f.readlines() if "[ERROR]" in l or "[WARNING]" in l]
-    if not errs:
-        await message.answer("✅ Ошибок и предупреждений нет.")
-        return
-    tail = "".join(errs[-20:])
-    if len(tail) > 3500:
-        tail = tail[-3500:]
-    await message.answer(f"⚠️ Последние ошибки:\n\n{tail}")
-
-
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
     if not is_owner(message):
@@ -1423,7 +1379,7 @@ async def inline_handler(query: InlineQuery):
     await query.answer(results, cache_time=60)
 
 
-# ---------- Кнопки (редактируем то же сообщение) ----------
+# ---------- Кнопки ----------
 @dp.callback_query()
 async def cb_handler(callback: CallbackQuery):
     action = callback.data
@@ -1434,19 +1390,15 @@ async def cb_handler(callback: CallbackQuery):
     if action == "btn_today":
         text = format_message(date.today())
         markup = main_keyboard()
-
     elif action == "btn_tomorrow":
         text = format_message(date.today() + timedelta(days=1))
         markup = main_keyboard()
-
     elif action == "btn_week":
         text = format_week()
         markup = main_keyboard()
-
     elif action == "btn_bells":
         text = format_bells()
         markup = bells_keyboard()
-
     elif action == "btn_changes":
         pairs, week_type, changes = get_schedule_for_date(date.today())
         if not changes:
@@ -1457,32 +1409,26 @@ async def cb_handler(callback: CallbackQuery):
                 text += f"• {c['pair']} пара: {c['old']} → {c['new']}\n"
         text += f"\n💬 Вопросы — @{CONTACT_USERNAME}"
         markup = main_keyboard()
-
     elif action == "btn_back_main":
         text = format_main_menu()
         markup = main_keyboard()
-
     elif action == "pick_year":
         text = "Укажи год:"
         markup = years_keyboard()
-
     elif action.startswith("pick_month_"):
         year = int(action.split("_")[2])
         text = f"Укажи месяц ({year}):"
         markup = months_keyboard(year)
-
     elif action.startswith("pick_day_"):
         _, _, y, m = action.split("_")
         year, month = int(y), int(m)
         text = f"Укажи день ({MONTHS_RU_SHORT[month-1]} {year}):"
         markup = days_keyboard(year, month)
-
     elif action.startswith("show_date_"):
         _, _, y, m, d = action.split("_")
         target = date(int(y), int(m), int(d))
         text = format_message(target)
         markup = main_keyboard()
-
     elif action == "noop":
         await callback.answer()
         return
@@ -1503,33 +1449,16 @@ async def cb_handler(callback: CallbackQuery):
 
 
 # ================= ЗАПУСК =================
-# Эту функцию вызывает app.py через отдельный поток
-async def run_bot():
-    scheduler = AsyncIOScheduler(timezone="Asia/Yekaterinburg")
+# Планировщик выносим в отдельную функцию, чтобы app.py её вызвал
+scheduler = AsyncIOScheduler(timezone="Asia/Yekaterinburg")
 
+
+def init_scheduler():
     scheduler.add_job(preview_today, "cron", hour=5, minute=50, args=[bot])
     scheduler.add_job(preview_tomorrow, "cron", hour=17, minute=50, args=[bot])
     scheduler.add_job(warn_today, "cron", hour=5, minute=58, args=[bot])
     scheduler.add_job(warn_tomorrow, "cron", hour=17, minute=58, args=[bot])
     scheduler.add_job(send_today, "cron", hour=6, minute=0, args=[bot])
     scheduler.add_job(send_tomorrow, "cron", hour=18, minute=0, args=[bot])
-
     scheduler.start()
-    log.info("Бот запущен.")
-
-    await notify_owner(
-        bot,
-        f"✅ Бот запущен.\n"
-        f"Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-        f"Рассылки: 06:00 и 18:00 (Екатеринбург)\n"
-        f"Команды владельца: /ownerhelp"
-    )
-
-    print("Бот запущен.")
-    await dp.start_polling(bot)
-
-
-# На Render запуском управляет app.py.
-# Локально можно запустить так: python ras.py
-if __name__ == "__main__":
-    asyncio.run(run_bot())
+    log.info("Планировщик запущен.")
