@@ -1,16 +1,22 @@
 import os
 import asyncio
-import threading
-from flask import Flask
+import logging
+from flask import Flask, request, Response
+from aiogram import types
 
-# Импортируем bot и dp из твоего ras.py
-from ras import bot, dp
+# Импортируем бота, диспетчер и планировщик из ras.py
+from ras import bot, dp, init_scheduler, log
 
 app = Flask(__name__)
 
+# На Render автоматически есть переменная RENDER_EXTERNAL_URL
+# Она вида https://твой-сервис.onrender.com
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "secret")
+
 
 @app.route("/")
-def home():
+def index():
     return "Bot is running"
 
 
@@ -19,22 +25,41 @@ def health():
     return "OK"
 
 
-def run_bot():
-    """Запускает polling бота в отдельном потоке."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+@app.route(WEBHOOK_PATH, methods=["POST"])
+async def webhook():
+    if request.headers.get("content-type") == "application/json":
+        update = types.Update.model_validate(request.json)
+        await dp.feed_webhook_update(bot, update, secret=WEBHOOK_SECRET)
+        return Response("ok", status=200)
+    return Response("bad request", status=400)
+
+
+def setup_webhook():
+    """Устанавливает вебхук в Telegram при старте."""
+    external_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not external_url:
+        log.warning("RENDER_EXTERNAL_URL не задан — вебхук не установлен.")
+        return
+    webhook_url = f"{external_url}{WEBHOOK_PATH}"
     try:
-        loop.run_until_complete(dp.start_polling(bot))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(
+            bot.set_webhook(
+                url=webhook_url,
+                secret_token=WEBHOOK_SECRET,
+                drop_pending_updates=True,
+            )
+        )
+        log.info(f"Вебхук установлен: {webhook_url}")
     except Exception as e:
-        print(f"Ошибка polling: {e}")
-
-
-# На Render переменная RENDER выставляется автоматически
-if os.environ.get("RENDER"):
-    t = threading.Thread(target=run_bot, daemon=True)
-    t.start()
+        log.exception(f"Ошибка установки вебхука: {e}")
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    # Запускаем планировщик
+    init_scheduler()
+    # Ставим вебхук
+    setup_webhook()
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
